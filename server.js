@@ -33,12 +33,15 @@ const BOOST_DRAIN_PER_SEC = 6;
 const FOOD_PICKUP_RADIUS = 22;
 const NUM_BOTS = 5;
 const HUNTER_BOTS = 1;
-const SPAWN_INVINCIBLE_MS = 2000;
+const SPAWN_INVINCIBLE_MS = 3500; // longer grace after spawn
 const VIEWPORT_RANGE = 1150;
-const HAZARD_COUNT = 14;
-const HAZARD_MIN_RADIUS = 320;
+const HAZARD_COUNT = 8;
+const HAZARD_MIN_RADIUS = 480; // bigger central safe zone
 const GOLD_ORB_CHANCE = 0.025;
 const GOLD_ORB_VALUE = 5;
+const COLLISION_TOLERANCE = 1.55; // x SEGMENT_RADIUS — sub-circle tolerance, more forgiving than full overlap
+const HUNTER_MIN_TARGET_LEN = 40; // hunters ignore players smaller than this
+const HUNTER_BOOST_DIST = 180; // hunters only boost-attack at very close range
 
 // ===== State =====
 const snakes = new Map();
@@ -122,7 +125,7 @@ function generateHazards() {
       id: i,
       x: Math.cos(a) * r,
       y: Math.sin(a) * r,
-      r: 30 + Math.random() * 14,
+      r: 26 + Math.random() * 10, // slightly smaller hit radius
       spin: Math.random() < 0.5 ? 1 : -1,
     });
   }
@@ -333,7 +336,7 @@ function snakeSnakeCollisions() {
   for (const s of snakes.values()) if (s.alive) list.push(s);
   const toKill = new Map(); // victim id -> killer snake
   const now = Date.now();
-  const collisionR = SEGMENT_RADIUS * 2;
+  const collisionR = SEGMENT_RADIUS * COLLISION_TOLERANCE; // forgiving sub-overlap
   const cR2 = collisionR * collisionR;
   for (const a of list) {
     if (now < a.spawnInvincibleUntil) continue;
@@ -437,10 +440,11 @@ function botThink(s) {
     return;
   }
 
-  // Hunter behavior: chase the longest non-bot snake and boost when close
+  // Hunter behavior: only chase humans who are clearly ahead (length >= 40),
+  // and only boost-attack at point-blank range. Newer/smaller players are safe.
   if (s.botType === 'hunter') {
     let target = null;
-    let targetSize = 14;
+    let targetSize = HUNTER_MIN_TARGET_LEN;
     for (const other of snakes.values()) {
       if (other.id === s.id || !other.alive || other.isBot) continue;
       if (other.segments.length > targetSize) {
@@ -452,11 +456,11 @@ function botThink(s) {
       const th = target.segments[0];
       const dx = th.x - head.x, dy = th.y - head.y;
       const dist = Math.hypot(dx, dy);
-      const lead = Math.min(180, dist * 0.35);
+      const lead = Math.min(140, dist * 0.3);
       const aimX = th.x + Math.cos(target.direction) * lead;
       const aimY = th.y + Math.sin(target.direction) * lead;
       s.targetDir = Math.atan2(aimY - head.y, aimX - head.x);
-      s.boosting = dist < 380 && s.segments.length > MIN_BOOST_LENGTH + 4;
+      s.boosting = dist < HUNTER_BOOST_DIST && s.segments.length > MIN_BOOST_LENGTH + 4;
       return;
     }
   }

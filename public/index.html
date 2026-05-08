@@ -69,7 +69,9 @@
 <div id="death" class="hidden">
   <div class="menu-card">
     <h2>You died!</h2>
-    <p class="tag">Final length: <span id="death-length">0</span></p>
+    <p class="tag" id="death-cause-line">Length: <span id="death-length">0</span></p>
+    <input class="name-input" id="death-name-input" maxlength="16" placeholder="Your name" autocomplete="off">
+    <div class="color-picker" id="death-color-picker"></div>
     <button id="respawn-btn">PLAY AGAIN</button>
     <p class="controls">Press <strong>Enter</strong> or <strong>Space</strong> to respawn</p>
   </div>

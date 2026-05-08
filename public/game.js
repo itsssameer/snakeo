@@ -42,6 +42,9 @@
   const bountyBannerEl = document.getElementById('bounty-banner');
   const bountyNameEl = document.getElementById('bounty-name');
   const flashEl = document.getElementById('flash');
+  const deathNameInput = document.getElementById('death-name-input');
+  const deathColorPicker = document.getElementById('death-color-picker');
+  const deathCauseLineEl = document.getElementById('death-cause-line');
 
   // ===== Mobile detection (drives perf + UX) =====
   const isTouchDevice = window.matchMedia('(pointer: coarse)').matches || (navigator.maxTouchPoints || 0) > 1;
@@ -160,6 +163,17 @@
           this.segments[i].x += dx * t;
           this.segments[i].y += dy * t;
         }
+      }
+
+      // Clamp head just inside the world boundary so visuals don't punch
+      // through the red ring before the server's death verdict lands.
+      const headDistSq = this.segments[0].x * this.segments[0].x + this.segments[0].y * this.segments[0].y;
+      const limit = world - 4;
+      if (headDistSq > limit * limit) {
+        const headDist = Math.sqrt(headDistSq);
+        const k = limit / headDist;
+        this.segments[0].x *= k;
+        this.segments[0].y *= k;
       }
     }
     reconcile(seg, dir) {
@@ -414,6 +428,9 @@
     } catch {}
   }
 
+  // ===== Death cause tracking =====
+  let lastDeathCauseHTML = '';
+
   // ===== Kill feed =====
   let lastSeenKillId = 0;
   function processKills(killsList) {
@@ -439,6 +456,16 @@
         cameraShake(20);
         const myP = players.find(p => p.id === k.vid);
         if (myP) spawnParticles(myP.headX, myP.headY, { count: 60, hue: myP.hue, life: 1200, speed: 7, size: 4 });
+        // Capture cause for the death overlay text
+        if (k.kn) {
+          lastDeathCauseHTML = 'Killed by <strong style="color:hsl(' + k.kh + ',80%,68%)">' + escapeHtml(k.kn) + '</strong>';
+        } else if (k.cause === 'hazard') {
+          lastDeathCauseHTML = 'Hit a mine 💥';
+        } else if (k.cause === 'wall') {
+          lastDeathCauseHTML = 'Hit the wall 🧱';
+        } else {
+          lastDeathCauseHTML = 'You died';
+        }
       }
     }
   }
@@ -660,6 +687,15 @@
     const p = players[slot];
     if (!p) return;
     if (performance.now() < p.respawnGraceUntil) return;
+    // Solo: pick up any name/color the user just edited on the death overlay
+    if (slot === 0 && players.length === 1 && deathNameInput) {
+      const v = deathNameInput.value.trim().slice(0, 16);
+      if (v) p.name = v;
+      try {
+        localStorage.setItem('snakeo:p0name', p.name);
+        localStorage.setItem('snakeo:p0hue', String(p.hue));
+      } catch {}
+    }
     socket.emit('rejoin', { slot, name: p.name, hue: p.hue });
     hideDeathOverlay(slot);
     p.alive = true;
@@ -679,7 +715,18 @@
 
   function showDeathOverlay(slot, length) {
     if (players.length === 1) {
+      const p = players[0];
       deathLen.textContent = length;
+      if (deathCauseLineEl) {
+        const cause = lastDeathCauseHTML || 'You died';
+        deathCauseLineEl.innerHTML = cause + ' · Length ' + length;
+      }
+      if (deathNameInput && p) deathNameInput.value = p.name || '';
+      if (deathColorPicker && p) {
+        deathColorPicker.querySelectorAll('.swatch').forEach(c => {
+          c.classList.toggle('selected', +c.dataset.hue === p.hue);
+        });
+      }
       death.classList.remove('hidden');
       death.classList.add('show');
     } else {
@@ -703,6 +750,35 @@
   nameInputs.forEach(inp => inp.addEventListener('keydown', e => {
     if (e.key === 'Enter') startGame();
   }));
+  if (deathNameInput) {
+    deathNameInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        respawnPlayer(0);
+      }
+      e.stopPropagation();
+    });
+  }
+  // Build the death-screen color picker (independent of the menu's pickers)
+  function buildDeathColorPicker() {
+    if (!deathColorPicker) return;
+    deathColorPicker.innerHTML = '';
+    HUES.forEach(h => {
+      const sw = document.createElement('div');
+      sw.className = 'swatch';
+      sw.style.background = `hsl(${h}, 80%, 60%)`;
+      sw.dataset.hue = h;
+      sw.addEventListener('click', () => {
+        const newHue = +sw.dataset.hue;
+        if (players[0]) players[0].hue = newHue;
+        pickedHue[0] = newHue;
+        deathColorPicker.querySelectorAll('.swatch').forEach(c => c.classList.remove('selected'));
+        sw.classList.add('selected');
+      });
+      deathColorPicker.appendChild(sw);
+    });
+  }
+  buildDeathColorPicker();
 
   // ===== Socket =====
   socket.on('connect', () => {
@@ -856,6 +932,9 @@
 
   window.addEventListener('keydown', (e) => {
     if (e.repeat) return;
+    // Don't intercept while typing in the menu/death name inputs.
+    const tgt = e.target;
+    if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA')) return;
     for (const p of players) {
       const c = p.controls;
       if (!c) continue;
@@ -989,6 +1068,11 @@
   }, 1000 / 30);
 
   // ===== Interpolation =====
+  // Allow extrapolation up to 1.5 ticks past the latest snapshot — masks the
+  // gap when packets arrive late on Render free, which was causing the
+  // 'jumpy' look on other snakes.
+  const MAX_INTERP_ALPHA = 1.5;
+
   function getInterpolatedHead(snakeId) {
     // Local players: use the predictor for instant input response
     for (const p of players) {
@@ -1001,9 +1085,9 @@
     if (!cs) return null;
     if (!prev) return { x: cs.s[0], y: cs.s[1] };
     const ps = prev.sn.find(s => s.id === snakeId);
-    if (!ps || ps.s.length !== cs.s.length) return { x: cs.s[0], y: cs.s[1] };
+    if (!ps) return { x: cs.s[0], y: cs.s[1] };
     const dt = performance.now() - currRecvAt;
-    const a = Math.min(1, dt / tickInterval);
+    const a = Math.min(MAX_INTERP_ALPHA, dt / tickInterval);
     return {
       x: ps.s[0] + (cs.s[0] - ps.s[0]) * a,
       y: ps.s[1] + (cs.s[1] - ps.s[1]) * a,
@@ -1013,14 +1097,17 @@
   function lerpSegments(snake) {
     if (!prev) return snake.s;
     const ps = prev.sn.find(s => s.id === snake.id);
-    if (!ps || ps.s.length !== snake.s.length) return snake.s;
-    const dt = performance.now() - currRecvAt;
-    const a = Math.min(1, dt / tickInterval);
+    if (!ps) return snake.s;
     const cs = snake.s;
+    const dt = performance.now() - currRecvAt;
+    const a = Math.min(MAX_INTERP_ALPHA, dt / tickInterval);
+    // Lerp matching indices; for any new tail (snake grew), use curr verbatim.
+    const matchLen = Math.min(cs.length, ps.s.length);
     const out = new Array(cs.length);
-    for (let i = 0; i < cs.length; i++) {
+    for (let i = 0; i < matchLen; i++) {
       out[i] = ps.s[i] + (cs[i] - ps.s[i]) * a;
     }
+    for (let i = matchLen; i < cs.length; i++) out[i] = cs[i];
     return out;
   }
 

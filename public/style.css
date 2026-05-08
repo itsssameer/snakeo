@@ -124,6 +124,17 @@ body[data-mode="duo"] .duo-only { display: block !important; }
   animation: fadeIn 0.2s;
 }
 
+/* Soften the death visual — fade in over 320ms instead of instant pop. */
+#death { transition: opacity 0.32s ease-out; }
+#death.hidden { display: flex !important; opacity: 0; pointer-events: none; }
+#death.show { opacity: 1; pointer-events: auto; }
+#death .menu-card { transform: scale(0.96); transition: transform 0.32s ease-out; }
+#death.show .menu-card { transform: scale(1); }
+#death-color-picker .swatch { width: 28px; height: 28px; }
+@media (pointer: coarse), (hover: none) {
+  #death-color-picker .swatch { width: 36px; height: 36px; }
+}
+
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
 .menu-card {
