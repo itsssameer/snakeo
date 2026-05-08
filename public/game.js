@@ -35,6 +35,12 @@
     document.getElementById('death-half-1'),
   ];
   const touchBoost = document.getElementById('touch-boost');
+  const killFeedEl = document.getElementById('kill-feed');
+  const comboEl = document.getElementById('combo');
+  const milestoneEl = document.getElementById('milestone');
+  const bountyBannerEl = document.getElementById('bounty-banner');
+  const bountyNameEl = document.getElementById('bounty-name');
+  const flashEl = document.getElementById('flash');
 
   // ===== Canvas sizing =====
   let dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -74,6 +80,257 @@
       respawn: ['ArrowUp', 'ArrowDown', 'ShiftRight', 'Slash'],
     },
   };
+
+  // ===== Audio (procedural Web Audio SFX) =====
+  class SFX {
+    constructor() { this.ctx = null; this.master = null; this.muted = false; }
+    ensure() {
+      if (this.ctx) return;
+      const C = window.AudioContext || window.webkitAudioContext;
+      if (!C) return;
+      this.ctx = new C();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = 0.45;
+      this.master.connect(this.ctx.destination);
+    }
+    resume() {
+      this.ensure();
+      if (this.ctx?.state === 'suspended') this.ctx.resume().catch(() => {});
+    }
+    blip({ freq = 880, dur = 0.08, type = 'sine', vol = 0.15, freqEnd = null, attack = 0.005, release = 0.04 }) {
+      if (this.muted) return;
+      this.ensure();
+      if (!this.ctx) return;
+      const t0 = this.ctx.currentTime;
+      const osc = this.ctx.createOscillator();
+      osc.type = type;
+      osc.frequency.value = freq;
+      if (freqEnd != null) osc.frequency.exponentialRampToValueAtTime(Math.max(20, freqEnd), t0 + dur);
+      const g = this.ctx.createGain();
+      g.gain.value = 0;
+      g.gain.linearRampToValueAtTime(vol, t0 + attack);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur + release);
+      osc.connect(g).connect(this.master);
+      osc.start(t0);
+      osc.stop(t0 + dur + release + 0.02);
+    }
+    noise({ dur = 0.12, vol = 0.2, lp = 2000 }) {
+      if (this.muted) return;
+      this.ensure();
+      if (!this.ctx) return;
+      const t0 = this.ctx.currentTime;
+      const len = Math.max(1, Math.floor(this.ctx.sampleRate * dur));
+      const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+      const ch = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) ch[i] = Math.random() * 2 - 1;
+      const src = this.ctx.createBufferSource();
+      src.buffer = buf;
+      let node = src;
+      if (lp) {
+        const f = this.ctx.createBiquadFilter();
+        f.type = 'lowpass';
+        f.frequency.value = lp;
+        node.connect(f);
+        node = f;
+      }
+      const g = this.ctx.createGain();
+      g.gain.value = 0;
+      g.gain.linearRampToValueAtTime(vol, t0 + 0.005);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      node.connect(g).connect(this.master);
+      src.start(t0);
+      src.stop(t0 + dur + 0.05);
+    }
+    eat() { this.blip({ freq: 880, freqEnd: 1320, dur: 0.05, type: 'square', vol: 0.05 }); }
+    boost() { this.noise({ dur: 0.08, vol: 0.05, lp: 700 }); }
+    die() {
+      this.blip({ freq: 220, freqEnd: 60, dur: 0.55, type: 'sawtooth', vol: 0.18 });
+      this.noise({ dur: 0.32, vol: 0.12, lp: 1500 });
+    }
+    kill() {
+      this.blip({ freq: 110, freqEnd: 880, dur: 0.18, type: 'square', vol: 0.18 });
+      setTimeout(() => this.blip({ freq: 1320, dur: 0.08, type: 'sine', vol: 0.1 }), 70);
+    }
+    milestone() {
+      this.blip({ freq: 880, dur: 0.06, type: 'triangle', vol: 0.1 });
+      setTimeout(() => this.blip({ freq: 1320, dur: 0.06, type: 'triangle', vol: 0.1 }), 60);
+      setTimeout(() => this.blip({ freq: 1760, dur: 0.1, type: 'triangle', vol: 0.12 }), 120);
+    }
+  }
+  const sfx = new SFX();
+
+  // ===== Particles =====
+  const particles = [];
+  function spawnParticles(x, y, opts = {}) {
+    const count = opts.count || 12;
+    const speed = opts.speed || 3;
+    const life = opts.life || 700;
+    const baseHue = opts.hue ?? 0;
+    const size = opts.size || 3;
+    for (let i = 0; i < count; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = speed * (0.4 + Math.random() * 0.8);
+      particles.push({
+        x, y,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp,
+        born: performance.now(),
+        life,
+        hue: baseHue + (Math.random() - 0.5) * 30,
+        size: size * (0.7 + Math.random() * 0.7),
+      });
+    }
+    if (particles.length > 800) particles.splice(0, particles.length - 800);
+  }
+  function updateParticles() {
+    const now = performance.now();
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      if (now - p.born >= p.life) { particles.splice(i, 1); continue; }
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vx *= 0.93;
+      p.vy *= 0.93;
+    }
+  }
+  function drawParticles(ox, oy, vx, vy, vw, vh) {
+    const now = performance.now();
+    for (const p of particles) {
+      const t = (now - p.born) / p.life;
+      if (t > 1) continue;
+      const fade = 1 - t;
+      const sx = p.x + ox, sy = p.y + oy;
+      if (sx < vx - 6 || sx > vx + vw + 6 || sy < vy - 6 || sy > vy + vh + 6) continue;
+      ctx.fillStyle = `hsla(${p.hue}, 90%, 70%, ${fade})`;
+      ctx.beginPath();
+      ctx.arc(sx, sy, p.size * (0.4 + 0.7 * fade), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // ===== Camera shake / flash / milestone =====
+  let shakeAmount = 0;
+  function cameraShake(amount) { shakeAmount = Math.max(shakeAmount, amount); }
+  function flash(kind) {
+    flashEl.classList.remove('show-red', 'show-gold');
+    void flashEl.offsetWidth;
+    flashEl.classList.add(kind === 'gold' ? 'show-gold' : 'show-red');
+  }
+  function showMilestone(text) {
+    milestoneEl.textContent = text;
+    milestoneEl.classList.remove('pop');
+    void milestoneEl.offsetWidth;
+    milestoneEl.classList.add('pop');
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+  }
+
+  // ===== Wake lock + fullscreen =====
+  let wakeLock = null;
+  async function requestWakeLock() {
+    try {
+      if ('wakeLock' in navigator) {
+        wakeLock = await navigator.wakeLock.request('screen');
+      }
+    } catch {}
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && players.length) requestWakeLock();
+  });
+  function tryFullscreen() {
+    const isTouch = window.matchMedia('(pointer: coarse)').matches;
+    if (!isTouch) return;
+    const el = document.documentElement;
+    try {
+      const req = el.requestFullscreen || el.webkitRequestFullscreen;
+      if (req) Promise.resolve(req.call(el)).catch(() => {});
+    } catch {}
+  }
+
+  // ===== Kill feed =====
+  let lastSeenKillId = 0;
+  function processKills(killsList) {
+    if (!killsList || !killsList.length) return;
+    const myIds = new Set(players.map(p => p.id).filter(Boolean));
+    for (const k of killsList) {
+      if (!k || k.id <= lastSeenKillId) continue;
+      lastSeenKillId = k.id;
+      addKillRow(k);
+
+      if (myIds.has(k.kid)) {
+        sfx.kill();
+        flash('gold');
+        cameraShake(11);
+        const ks = curr && curr.sn.find(s => s.id === k.kid);
+        if (ks) spawnParticles(ks.s[0], ks.s[1], { count: 32, hue: k.vh, life: 900, speed: 5 });
+        if (k.bountied) { showMilestone('💰 BOUNTY!'); sfx.milestone(); }
+        else if (k.big) showMilestone('+' + k.vlen + ' EATS!');
+      }
+      if (myIds.has(k.vid)) {
+        sfx.die();
+        flash('red');
+        cameraShake(20);
+        const myP = players.find(p => p.id === k.vid);
+        if (myP) spawnParticles(myP.headX, myP.headY, { count: 60, hue: myP.hue, life: 1200, speed: 7, size: 4 });
+      }
+    }
+  }
+  function addKillRow(k) {
+    if (!killFeedEl) return;
+    const div = document.createElement('div');
+    div.className = 'kill-row';
+    if (k.bountied) div.classList.add('bountied');
+    const killer = k.kn ? `<span class="kn" style="color:hsl(${k.kh},80%,68%)">${escapeHtml(k.kn)}</span>` : '';
+    let arrow;
+    if (!k.kn) {
+      if (k.cause === 'hazard') arrow = '<span class="arrow">💥</span>';
+      else if (k.cause === 'wall') arrow = '<span class="arrow">🧱</span>';
+      else arrow = '<span class="arrow">💀</span>';
+    } else {
+      arrow = '<span class="arrow">⚔</span>';
+    }
+    const victim = `<span class="vn" style="color:hsl(${k.vh},80%,68%)">${escapeHtml(k.vn)}</span>`;
+    const bountyTag = k.bountied ? '<span class="bounty-tag">BOUNTY</span>' : '';
+    div.innerHTML = killer + arrow + victim + bountyTag;
+    killFeedEl.appendChild(div);
+    setTimeout(() => div.classList.add('fade'), 4500);
+    setTimeout(() => div.remove(), 5500);
+    while (killFeedEl.children.length > 6) killFeedEl.firstChild.remove();
+  }
+
+  // ===== Combo HUD =====
+  function updateComboHud() {
+    let maxCombo = 0;
+    for (const p of players) {
+      if (!p.id) continue;
+      const me = curr && curr.sn.find(s => s.id === p.id);
+      if (me && me.c) maxCombo = Math.max(maxCombo, me.c);
+    }
+    if (maxCombo >= 3) {
+      comboEl.textContent = 'x' + maxCombo;
+      comboEl.classList.add('show');
+    } else {
+      comboEl.classList.remove('show');
+    }
+  }
+
+  // ===== Bounty banner =====
+  function updateBountyBanner() {
+    let leader = null;
+    if (curr) {
+      for (const s of curr.sn) {
+        if (s.l) { leader = s; break; }
+      }
+    }
+    const myIds = new Set(players.map(p => p.id).filter(Boolean));
+    if (leader) {
+      bountyBannerEl.classList.remove('hidden');
+      bountyNameEl.textContent = myIds.has(leader.id) ? 'YOU' : leader.name;
+    } else {
+      bountyBannerEl.classList.add('hidden');
+    }
+  }
 
   // ===== State =====
   class Player {
@@ -210,6 +467,9 @@
       p.dead = false;
       p.respawnGraceUntil = now + 1500;
     }
+    sfx.resume();
+    requestWakeLock();
+    tryFullscreen();
   }
 
   function respawnPlayer(slot) {
@@ -221,6 +481,8 @@
     p.alive = true;
     p.dead = false;
     p.respawnGraceUntil = performance.now() + 1500;
+    sfx.resume();
+    requestWakeLock();
   }
 
   function hideAllMenus() {
@@ -309,7 +571,16 @@
           hideDeathOverlay(p.slot);
         }
         p.alive = true;
-        p.length = Math.floor(me.s.length / 2);
+        const newLen = Math.floor(me.s.length / 2);
+        if (p.length > 0 && newLen > p.length) {
+          const now = performance.now();
+          if (now - (p.lastEatSfx || 0) > 70) {
+            p.lastEatSfx = now;
+            sfx.eat();
+            spawnParticles(me.s[0], me.s[1], { count: 4, hue: p.hue, life: 380, speed: 1.6, size: 2 });
+          }
+        }
+        p.length = newLen;
         p.headX = me.s[0];
         p.headY = me.s[1];
         p.lastDir = me.d;
@@ -328,6 +599,9 @@
       }
     }
 
+    processKills(data.kills);
+    updateBountyBanner();
+    updateComboHud();
     updateHud();
     updateLeaderboard(data.lb);
   });
@@ -352,7 +626,8 @@
       dot.style.background = `hsl(${e.hue}, 80%, 60%)`;
       const name = document.createElement('span');
       name.className = 'lname';
-      name.textContent = (e.bot ? '' : '') + e.name;
+      name.textContent = e.name;
+      if (e.bot) li.classList.add('bot-row');
       const sc = document.createElement('span');
       sc.className = 'lscore';
       sc.textContent = e.score;
@@ -451,6 +726,7 @@
   if (touchBoost) {
     touchBoost.addEventListener('pointerdown', (e) => {
       e.preventDefault();
+      sfx.resume();
       try { touchBoost.setPointerCapture(e.pointerId); } catch {}
       setTouchBoost(true);
     });
@@ -486,6 +762,8 @@
       }
       inputs.push({ a: angle, b: !!p.boost });
       views.push({ x: p.headX || 0, y: p.headY || 0 });
+      if (p.boost && !p.lastBoost && p.alive) sfx.boost();
+      p.lastBoost = p.boost;
     }
     socket.emit('input', { inputs, views });
   }, 1000 / 30);
@@ -527,6 +805,11 @@
 
     const w = window.innerWidth, h = window.innerHeight;
 
+    // Decay shake once per frame and update particles once per frame
+    if (shakeAmount > 0.5) shakeAmount *= 0.85;
+    else shakeAmount = 0;
+    updateParticles();
+
     if (!curr || !players.length) {
       ctx.fillStyle = '#06060e';
       ctx.fillRect(0, 0, w, h);
@@ -558,7 +841,7 @@
       drawWorldFor(players[0], 0, 0, w, h);
     }
 
-    if (players.length === 1) drawMinimap();
+    drawMinimap();
   }
 
   function drawWorldFor(player, vx, vy, vw, vh) {
@@ -573,8 +856,10 @@
     player.camX = camX;
     player.camY = camY;
 
-    const ox = vx + vw / 2 - camX;
-    const oy = vy + vh / 2 - camY;
+    const shakeX = (Math.random() - 0.5) * shakeAmount;
+    const shakeY = (Math.random() - 0.5) * shakeAmount;
+    const ox = vx + vw / 2 - camX + shakeX;
+    const oy = vy + vh / 2 - camY + shakeY;
 
     ctx.fillStyle = '#06060e';
     ctx.fillRect(vx, vy, vw, vh);
@@ -584,6 +869,67 @@
     drawHazards(ox, oy, vx, vy, vw, vh);
     drawFood(ox, oy, vx, vy, vw, vh);
     drawSnakes(ox, oy, vx, vy, vw, vh, player);
+    drawParticles(ox, oy, vx, vy, vw, vh);
+    drawOffScreenIndicators(player, vx, vy, vw, vh, ox, oy);
+  }
+
+  function drawOffScreenIndicators(player, vx, vy, vw, vh, ox, oy) {
+    if (!curr) return;
+    const myIds = new Set(players.map(p => p.id).filter(Boolean));
+    const ccX = vx + vw / 2;
+    const ccY = vy + vh / 2;
+    const margin = Math.min(60, vw / 8);
+    const radius = Math.min(vw, vh) / 2 - margin;
+    const time = performance.now();
+
+    for (const s of curr.sn) {
+      if (!s.a || s.bot) continue;
+      if (myIds.has(s.id)) continue;
+      if (!s.s || s.s.length < 2) continue;
+      const head = getInterpolatedHead(s.id);
+      if (!head) continue;
+      const sx = head.x + ox;
+      const sy = head.y + oy;
+      if (sx >= vx + 30 && sx <= vx + vw - 30 && sy >= vy + 30 && sy <= vy + vh - 30) continue;
+
+      const dx = head.x - player.camX;
+      const dy = head.y - player.camY;
+      const ang = Math.atan2(dy, dx);
+      const ax = ccX + Math.cos(ang) * radius;
+      const ay = ccY + Math.sin(ang) * radius;
+      const dist = Math.hypot(dx, dy);
+
+      ctx.save();
+      ctx.translate(ax, ay);
+      ctx.rotate(ang);
+      if (s.l) {
+        const pulse = Math.sin(time * 0.006) * 0.3 + 1;
+        ctx.fillStyle = `hsla(50, 95%, 65%, ${0.7 + pulse * 0.3})`;
+      } else {
+        ctx.fillStyle = `hsl(${s.hue}, 80%, 65%)`;
+      }
+      ctx.beginPath();
+      ctx.moveTo(13, 0);
+      ctx.lineTo(-9, -8);
+      ctx.lineTo(-9, 8);
+      ctx.closePath();
+      ctx.fill();
+      if (s.l) {
+        ctx.strokeStyle = '#ffe066';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      ctx.font = '600 11px Segoe UI, Inter, sans-serif';
+      ctx.fillStyle = s.l ? '#ffe066' : `hsl(${s.hue}, 85%, 78%)`;
+      ctx.textAlign = 'center';
+      ctx.shadowColor = 'rgba(0,0,0,0.85)';
+      ctx.shadowBlur = 4;
+      const label = (s.l ? '💰 ' : '') + s.name + ' · ' + Math.round(dist);
+      ctx.fillText(label, ax, ay + 22);
+      ctx.shadowBlur = 0;
+    }
   }
 
   function drawGrid(camX, camY, ox, oy, vx, vy, vw, vh) {
@@ -738,6 +1084,19 @@
     if (hx0 + reach < vx || hx0 - reach > vx + vw) return;
     if (hy0 + reach < vy || hy0 - reach > vy + vh) return;
 
+    // Bounty leader gold halo around head (drawn first, under body)
+    if (s.l) {
+      const pulse = 1 + Math.sin(time * 0.006) * 0.18;
+      const gradR = 38 * pulse;
+      const grad = ctx.createRadialGradient(hx0, hy0, 0, hx0, hy0, gradR);
+      grad.addColorStop(0, 'rgba(255, 220, 80, 0.55)');
+      grad.addColorStop(1, 'rgba(255, 220, 80, 0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(hx0, hy0, gradR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
     const bodyColor = `hsl(${s.hue}, 75%, 50%)`;
     const darkColor = `hsl(${s.hue}, 85%, 22%)`;
     const lightColor = `hsl(${s.hue}, 90%, 70%)`;
@@ -813,11 +1172,12 @@
 
     // Name tag
     const youSuffix = isLocal ? ' (you)' : '';
-    const label = (s.bot ? '' : '') + s.name + youSuffix;
+    const leaderPrefix = s.l ? '💰 ' : '';
+    const label = leaderPrefix + s.name + youSuffix;
     ctx.font = '600 12px Segoe UI, Inter, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
-    ctx.fillStyle = isLocal ? '#ffe066' : 'rgba(255,255,255,0.92)';
+    ctx.fillStyle = s.l ? '#ffe066' : (isLocal ? '#ffe066' : 'rgba(255,255,255,0.92)');
     ctx.shadowColor = 'rgba(0,0,0,0.85)';
     ctx.shadowBlur = 4;
     ctx.fillText(label, headX, headY - r - 8);

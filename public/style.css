@@ -335,6 +335,183 @@ body[data-mode="duo"] .duo-only { display: block !important; }
 .hidden { display: none !important; }
 .show { display: flex; }
 
+/* ===== Kill feed (top-center) ===== */
+#kill-feed {
+  position: absolute;
+  top: max(16px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  z-index: 12;
+  max-width: 80vw;
+}
+
+.kill-row {
+  background: rgba(8, 10, 22, 0.65);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  padding: 5px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  white-space: nowrap;
+  transition: opacity 1s ease, transform 0.4s ease;
+  animation: killSlide 0.3s ease-out;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+}
+
+@keyframes killSlide {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.kill-row.fade { opacity: 0; }
+.kill-row.bountied {
+  border-color: rgba(255, 215, 80, 0.6);
+  box-shadow: 0 0 16px rgba(255, 215, 80, 0.3);
+  background: linear-gradient(90deg, rgba(255, 215, 80, 0.18), rgba(8, 10, 22, 0.7));
+}
+.kill-row .arrow { color: #ff6b6b; font-size: 12px; }
+.kill-row .bounty-tag {
+  background: linear-gradient(90deg, #ffe066, #ffb000);
+  color: #1a1a2e;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  letter-spacing: 1px;
+  margin-left: 4px;
+  font-weight: 800;
+}
+
+/* ===== Combo overlay (above-center, below kill feed) ===== */
+#combo {
+  position: absolute;
+  top: 25%;
+  left: 50%;
+  transform: translateX(-50%) scale(0);
+  font-size: 48px;
+  font-weight: 900;
+  letter-spacing: 3px;
+  background: linear-gradient(180deg, #fff, #ffe066);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  text-shadow: 0 4px 24px rgba(255, 224, 102, 0.5);
+  filter: drop-shadow(0 2px 0 rgba(0, 0, 0, 0.4));
+  pointer-events: none;
+  z-index: 11;
+  opacity: 0;
+  transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+#combo.show { opacity: 1; transform: translateX(-50%) scale(1); }
+
+/* ===== Milestone toast (centered briefly) ===== */
+#milestone {
+  position: absolute;
+  top: 38%;
+  left: 50%;
+  transform: translate(-50%, 0) scale(0.8);
+  font-size: 34px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  color: #ffe066;
+  text-shadow: 0 0 24px rgba(255, 224, 102, 0.7), 0 4px 0 rgba(0,0,0,0.4);
+  pointer-events: none;
+  z-index: 11;
+  opacity: 0;
+  white-space: nowrap;
+}
+#milestone.pop {
+  animation: milePop 1.6s ease-out forwards;
+}
+@keyframes milePop {
+  0% { opacity: 0; transform: translate(-50%, 0) scale(0.6); }
+  18% { opacity: 1; transform: translate(-50%, -10px) scale(1.15); }
+  35% { transform: translate(-50%, -10px) scale(1); }
+  85% { opacity: 1; transform: translate(-50%, -20px) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -36px) scale(0.95); }
+}
+
+/* ===== Bounty banner (top under kill feed when leader exists) ===== */
+#bounty-banner {
+  position: absolute;
+  top: max(72px, calc(env(safe-area-inset-top) + 60px));
+  left: 50%;
+  transform: translateX(-50%);
+  background: linear-gradient(90deg, rgba(255, 215, 80, 0.95), rgba(255, 160, 50, 0.95));
+  color: #1a1a2e;
+  padding: 6px 14px;
+  border-radius: 16px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  pointer-events: none;
+  z-index: 11;
+  box-shadow: 0 6px 24px rgba(255, 215, 80, 0.4);
+  animation: bountyPulse 1.4s ease-in-out infinite;
+}
+@keyframes bountyPulse {
+  0%, 100% { box-shadow: 0 6px 24px rgba(255, 215, 80, 0.4); }
+  50% { box-shadow: 0 6px 36px rgba(255, 215, 80, 0.7); }
+}
+
+/* ===== Screen flash overlay ===== */
+#flash {
+  position: fixed;
+  inset: 0;
+  background: rgba(255, 255, 255, 0);
+  pointer-events: none;
+  z-index: 30;
+  opacity: 0;
+}
+#flash.show-red {
+  animation: flashRed 0.45s ease-out;
+}
+#flash.show-gold {
+  animation: flashGold 0.6s ease-out;
+}
+@keyframes flashRed {
+  0% { opacity: 1; background: rgba(255, 30, 30, 0.55); }
+  100% { opacity: 0; background: rgba(255, 30, 30, 0); }
+}
+@keyframes flashGold {
+  0% { opacity: 1; background: rgba(255, 220, 80, 0.6); }
+  100% { opacity: 0; background: rgba(255, 220, 80, 0); }
+}
+
+/* ===== Safe-area on existing HUD ===== */
+#score { left: max(16px, env(safe-area-inset-left)); top: max(16px, env(safe-area-inset-top)); }
+#score-2 {
+  left: calc(50% + 16px);
+  top: max(16px, env(safe-area-inset-top));
+}
+#leaderboard { right: max(16px, env(safe-area-inset-right)); top: max(16px, env(safe-area-inset-top)); }
+#minimap { right: max(16px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom)); }
+#touch-boost { right: max(24px, env(safe-area-inset-right)); bottom: max(24px, env(safe-area-inset-bottom)); }
+
+/* In duo mode: minimap in bottom-center spanning the divider */
+body[data-mode="duo"] #minimap {
+  right: auto;
+  left: 50%;
+  transform: translateX(-50%);
+}
+body[data-mode="duo"] #leaderboard { display: none; }
+
+/* Touch-only utility (visible only on coarse pointer) */
+.touch-only { display: none; }
+@media (pointer: coarse), (hover: none) {
+  body[data-mode="solo"] .touch-only { display: flex; }
+}
+
 /* Touch boost button — only on coarse-pointer (phones/tablets) in solo mode */
 #touch-boost {
   position: fixed;

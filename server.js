@@ -38,7 +38,14 @@ const GOLD_ORB_VALUE = 5;
 const snakes = new Map();
 const food = new Map();
 const clients = new Map();
+const kills = []; // recent kill events for kill feed
 let nextFoodId = 1;
+let nextKillId = 1;
+const KILL_FEED_KEEP = 30;
+const COMBO_WINDOW_MS = 2200;
+const LEADER_MIN_LENGTH = 30;
+const HUMAN_KILL_BONUS_RATIO = 0.12;
+const LEADER_KILL_BONUS_RATIO = 0.18;
 
 // ===== Utilities =====
 const TAU = Math.PI * 2;
@@ -54,6 +61,27 @@ function randomSpawnPoint() {
   const a = Math.random() * TAU;
   const r = Math.sqrt(Math.random()) * WORLD_RADIUS * 0.55;
   return { x: Math.cos(a) * r, y: Math.sin(a) * r };
+}
+
+function safeRandomSpawnPoint() {
+  for (let attempt = 0; attempt < 25; attempt++) {
+    const p = randomSpawnPoint();
+    let ok = true;
+    for (const s of snakes.values()) {
+      if (!s.alive) continue;
+      const head = s.segments[0];
+      const dx = head.x - p.x, dy = head.y - p.y;
+      if (dx * dx + dy * dy < 360 * 360) { ok = false; break; }
+    }
+    if (!ok) continue;
+    for (const h of HAZARDS) {
+      const dx = h.x - p.x, dy = h.y - p.y;
+      const safe = h.r + 90;
+      if (dx * dx + dy * dy < safe * safe) { ok = false; break; }
+    }
+    if (ok) return p;
+  }
+  return randomSpawnPoint();
 }
 
 // ===== Food =====
@@ -97,7 +125,7 @@ generateHazards();
 
 // ===== Snakes =====
 function createSnake(id, name, hue, isBot = false) {
-  const start = randomSpawnPoint();
+  const start = safeRandomSpawnPoint();
   const dir = Math.random() * TAU;
   const segments = [];
   for (let i = 0; i < STARTING_SEGMENTS; i++) {
@@ -118,6 +146,10 @@ function createSnake(id, name, hue, isBot = false) {
     boostBank: 0,
     alive: true,
     isBot,
+    isLeader: false,
+    combo: 0,
+    comboUntil: 0,
+    killCause: null,
     spawnInvincibleUntil: Date.now() + SPAWN_INVINCIBLE_MS,
   };
 }
@@ -126,9 +158,14 @@ function spawnSnake(id, name, hue, isBot = false) {
   snakes.set(id, s);
   return s;
 }
-function killSnake(s) {
+function killSnake(s, killer = null) {
   if (!s.alive) return;
   s.alive = false;
+
+  const wasLeader = !!s.isLeader;
+  const humanKill = killer && !s.isBot && !killer.isBot;
+
+  // Body drops (existing)
   const drops = Math.max(6, Math.floor(s.segments.length * 0.6));
   const totalValue = Math.max(s.segments.length, Math.floor(s.segments.length * 0.8));
   let remaining = totalValue;
@@ -145,6 +182,43 @@ function killSnake(s) {
       value
     );
   }
+
+  // Bounty bonus drops (gold orbs) — for human-killed-human and leader takedowns
+  let bonusOrbs = 0;
+  if (killer) {
+    if (wasLeader) bonusOrbs += Math.max(4, Math.floor(s.segments.length * LEADER_KILL_BONUS_RATIO));
+    if (humanKill) bonusOrbs += Math.max(3, Math.floor(s.segments.length * HUMAN_KILL_BONUS_RATIO));
+  }
+  for (let i = 0; i < bonusOrbs; i++) {
+    const seg = s.segments[Math.floor(Math.random() * s.segments.length)];
+    if (Math.hypot(seg.x, seg.y) > WORLD_RADIUS) continue;
+    addFood(
+      seg.x + (Math.random() - 0.5) * 32,
+      seg.y + (Math.random() - 0.5) * 32,
+      51, // gold
+      Math.max(2, Math.floor(s.segments.length / 22))
+    );
+  }
+
+  // Kill feed event
+  kills.push({
+    id: nextKillId++,
+    t: Date.now(),
+    kn: killer ? killer.name : null,
+    kh: killer ? killer.hue : 0,
+    kbot: killer ? !!killer.isBot : false,
+    kid: killer ? killer.id : null,
+    vn: s.name,
+    vh: s.hue,
+    vbot: !!s.isBot,
+    vid: s.id,
+    vlen: s.segments.length,
+    cause: killer ? 'snake' : (s.killCause || 'wall'),
+    bountied: wasLeader,
+    big: bonusOrbs > 0,
+  });
+  while (kills.length > KILL_FEED_KEEP) kills.shift();
+
   snakes.delete(s.id);
 }
 
@@ -162,6 +236,7 @@ function moveSnake(s, dt) {
   segs[0].y += Math.sin(s.direction) * speed * dt;
 
   if (Math.hypot(segs[0].x, segs[0].y) > WORLD_RADIUS) {
+    s.killCause = 'wall';
     killSnake(s);
     return;
   }
@@ -173,6 +248,7 @@ function moveSnake(s, dt) {
       const dy = segs[0].y - h.y;
       const rad = h.r + SEGMENT_RADIUS;
       if (dx * dx + dy * dy < rad * rad) {
+        s.killCause = 'hazard';
         killSnake(s);
         return;
       }
@@ -218,9 +294,11 @@ function moveSnake(s, dt) {
 function snakeFoodCollisions() {
   const range = SEGMENT_RADIUS + FOOD_PICKUP_RADIUS;
   const r2 = range * range;
+  const now = Date.now();
   for (const s of snakes.values()) {
     if (!s.alive) continue;
     const head = s.segments[0];
+    let ate = 0;
     for (const f of food.values()) {
       const dx = f.x - head.x;
       if (Math.abs(dx) > range) continue;
@@ -228,8 +306,18 @@ function snakeFoodCollisions() {
       if (Math.abs(dy) > range) continue;
       if (dx * dx + dy * dy <= r2) {
         s.pendingGrowth += f.size;
+        ate += f.size;
         food.delete(f.id);
       }
+    }
+    if (ate > 0) {
+      if (now < s.comboUntil) s.combo += 1;
+      else s.combo = 1;
+      s.comboUntil = now + COMBO_WINDOW_MS;
+      const bonus = Math.floor(s.combo / 4);
+      if (bonus > 0) s.pendingGrowth += bonus;
+    } else if (now > s.comboUntil && s.combo) {
+      s.combo = 0;
     }
   }
 }
@@ -237,7 +325,7 @@ function snakeFoodCollisions() {
 function snakeSnakeCollisions() {
   const list = [];
   for (const s of snakes.values()) if (s.alive) list.push(s);
-  const toKill = new Set();
+  const toKill = new Map(); // victim id -> killer snake
   const now = Date.now();
   const collisionR = SEGMENT_RADIUS * 2;
   const cR2 = collisionR * collisionR;
@@ -246,7 +334,6 @@ function snakeSnakeCollisions() {
     const head = a.segments[0];
     for (const b of list) {
       if (a.id === b.id) continue;
-      // Quick reject by bounding reach
       const reach = b.segments.length * SEGMENT_SPACING + collisionR;
       const bHead = b.segments[0];
       const dxh = bHead.x - head.x;
@@ -261,13 +348,28 @@ function snakeSnakeCollisions() {
         const dy = seg.y - head.y;
         if (Math.abs(dy) > collisionR) continue;
         if (dx * dx + dy * dy < cR2) {
-          toKill.add(a);
+          toKill.set(a.id, b);
           break;
         }
       }
     }
   }
-  for (const a of toKill) killSnake(a);
+  for (const [vid, killer] of toKill) {
+    const a = snakes.get(vid);
+    if (a && a.alive) killSnake(a, killer);
+  }
+}
+
+function updateBounty() {
+  let leader = null;
+  for (const s of snakes.values()) {
+    if (!s.alive || s.isBot) continue;
+    if (s.segments.length < LEADER_MIN_LENGTH) continue;
+    if (!leader || s.segments.length > leader.segments.length) leader = s;
+  }
+  for (const s of snakes.values()) {
+    s.isLeader = (s === leader);
+  }
 }
 
 // ===== Bots =====
@@ -413,6 +515,7 @@ setInterval(() => {
   for (const s of snakes.values()) moveSnake(s, dt);
   snakeFoodCollisions();
   snakeSnakeCollisions();
+  updateBounty();
   refillFood();
   ensureBots();
   broadcastState();
@@ -434,6 +537,8 @@ function snakePayload(s) {
     b: s.boosting && s.segments.length > MIN_BOOST_LENGTH,
     a: s.alive,
     bot: s.isBot,
+    l: s.isLeader || undefined,
+    c: s.combo > 1 ? s.combo : undefined,
   };
 }
 
@@ -487,6 +592,7 @@ function broadcastState() {
       yourId: client.slots[0] || sid,
       world: WORLD_RADIUS,
       players: snakes.size,
+      kills: kills.slice(-12),
     });
   }
 }

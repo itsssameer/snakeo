@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#06060e">
 <title>Snakeo - Multiplayer Snake</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -16,9 +20,14 @@
     <h3>Leaderboard</h3>
     <ol id="lb-list"></ol>
   </div>
-  <canvas id="minimap" class="solo-only" width="160" height="160"></canvas>
+  <canvas id="minimap" width="160" height="160"></canvas>
   <button id="touch-boost" class="touch-only solo-only" aria-label="Boost">⚡</button>
+  <div id="kill-feed" aria-live="polite"></div>
+  <div id="combo" aria-hidden="true"></div>
+  <div id="milestone" aria-hidden="true"></div>
+  <div id="bounty-banner" class="hidden">💰 BOUNTY <span id="bounty-name"></span></div>
 </div>
+<div id="flash" aria-hidden="true"></div>
 
 <div id="menu" class="show">
   <div class="menu-card">
