@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Snakeo - Multiplayer Snake</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-mode="solo">
+<canvas id="game"></canvas>
+
+<div id="hud" aria-hidden="true">
+  <div id="score" class="score-tag"><span class="score-label">Length</span> <span id="length">0</span></div>
+  <div id="score-2" class="score-tag duo-only"><span class="score-label">P2</span> <span id="length-2">0</span></div>
+  <div id="leaderboard" class="solo-only">
+    <h3>Leaderboard</h3>
+    <ol id="lb-list"></ol>
+  </div>
+  <canvas id="minimap" class="solo-only" width="160" height="160"></canvas>
+  <button id="touch-boost" class="touch-only solo-only" aria-label="Boost">⚡</button>
+</div>
+
+<div id="menu" class="show">
+  <div class="menu-card">
+    <h1>SNAKEO</h1>
+    <p class="tag">Eat orbs · Dodge mines · Outslither rivals</p>
+
+    <div class="mode-tabs">
+      <button class="mode-tab active" data-mode="solo">SOLO</button>
+      <button class="mode-tab" data-mode="duo">2 PLAYERS</button>
+    </div>
+
+    <div class="player-config" id="config-0">
+      <div class="config-head">
+        <span class="player-label">Player 1</span>
+        <span class="player-keys" id="p1-keys">🖱 Mouse · Space</span>
+      </div>
+      <input class="name-input" id="name-input-0" placeholder="Your name" maxlength="16" autocomplete="off">
+      <div class="color-picker" id="color-picker-0"></div>
+    </div>
+
+    <div class="player-config hidden" id="config-1">
+      <div class="config-head">
+        <span class="player-label">Player 2</span>
+        <span class="player-keys">← · → · ↑</span>
+      </div>
+      <input class="name-input" id="name-input-1" placeholder="Player 2" maxlength="16" autocomplete="off">
+      <div class="color-picker" id="color-picker-1"></div>
+    </div>
+
+    <button id="play-btn" disabled>Connecting…</button>
+
+    <div class="hazard-tip">
+      ⚠ Watch out for spinning red mines. Gold orbs are worth 5x. Red ☠ bots hunt the leader.
+    </div>
+    <p id="status">Connecting…</p>
+  </div>
+</div>
+
+<div id="death" class="hidden">
+  <div class="menu-card">
+    <h2>You died!</h2>
+    <p class="tag">Final length: <span id="death-length">0</span></p>
+    <button id="respawn-btn">PLAY AGAIN</button>
+    <p class="controls">Press <strong>Enter</strong> or <strong>Space</strong> to respawn</p>
+  </div>
+</div>
+
+<div id="death-half-0" class="death-half hidden">
+  <div class="death-half-card">
+    <h2>P1 died</h2>
+    <p class="death-half-stats">Length: <span class="dh-length">0</span></p>
+    <p class="death-hint">Press <strong>W</strong> to respawn</p>
+  </div>
+</div>
+<div id="death-half-1" class="death-half hidden">
+  <div class="death-half-card">
+    <h2>P2 died</h2>
+    <p class="death-half-stats">Length: <span class="dh-length">0</span></p>
+    <p class="death-hint">Press <strong>↑</strong> to respawn</p>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
