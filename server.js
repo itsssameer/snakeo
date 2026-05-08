@@ -6,7 +6,17 @@ const os = require('os');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
+// permessage-deflate compresses each WS frame. ~50-60% smaller bytes for
+// JSON-heavy payloads. The threshold avoids compressing tiny messages where
+// the framing overhead would exceed the savings.
+const io = new Server(server, {
+  cors: { origin: '*' },
+  perMessageDeflate: {
+    threshold: 1024,
+    zlibDeflateOptions: { level: 6 },
+  },
+  httpCompression: true,
+});
 
 app.use(express.static(path.join(__dirname, 'public'), {
   setHeaders: (res, p) => {
@@ -18,7 +28,7 @@ app.use(express.static(path.join(__dirname, 'public'), {
 
 // ===== Tunable game constants =====
 const WORLD_RADIUS = 2200;
-const TICK_RATE = 28; // 28 Hz — more snapshots = less interp gap on mobile
+const TICK_RATE = 22; // 22 Hz — reliable on Render free's 0.1 vCPU under multi-player load
 const TICK_MS = 1000 / TICK_RATE;
 const TARGET_FOOD = 600;
 const MAX_FOOD = 1500;
@@ -387,16 +397,36 @@ const BOT_NAMES = [
   'Viper', 'Sneki', 'Anaconda', 'Mamba', 'Fang', 'Kaa', 'Nag', 'Naga',
   'Slimon', 'Wormle', 'Spaghetti', 'Linguini', 'Ramen',
 ];
+function desiredBotCount() {
+  // Scale bots inversely with human count so total snakes stay ~5.
+  // Saves CPU + bandwidth as more cousins join.
+  let humans = 0;
+  for (const c of clients.values()) humans += c.slots.length;
+  return Math.max(2, NUM_BOTS - humans);
+}
+
 function ensureBots() {
+  const target = desiredBotCount();
   let count = 0;
   let hunters = 0;
-  for (const s of snakes.values()) {
-    if (s.isBot) count++;
+  const removableForagers = [];
+  for (const [id, s] of snakes) {
+    if (!s.isBot) continue;
+    count++;
     if (s.botType === 'hunter') hunters++;
+    else removableForagers.push(id);
   }
-  while (count < NUM_BOTS) {
+  // Trim excess foragers if we're over target
+  while (count > target && removableForagers.length > 0) {
+    const id = removableForagers.shift();
+    snakes.delete(id);
+    count--;
+  }
+  // Hunters only matter when the arena has a few players already
+  const allowHunter = target >= 4;
+  while (count < target) {
     const id = 'bot_' + Math.random().toString(36).slice(2, 9);
-    const isHunter = hunters < HUNTER_BOTS;
+    const isHunter = allowHunter && hunters < HUNTER_BOTS;
     const name = isHunter
       ? '☠ ' + BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)]
       : BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)];
@@ -516,8 +546,22 @@ function botThink(s) {
 
 // ===== Game loop =====
 let lastTick = Date.now();
+let prevTickAt = Date.now();
+let tickLagCount = 0;
+let tickWorkCum = 0;
+let tickWorkSamples = 0;
 setInterval(() => {
   const now = Date.now();
+  // Detect when ticks fall behind their budget (CPU saturation on Render free)
+  const elapsed = now - prevTickAt;
+  prevTickAt = now;
+  if (elapsed > TICK_MS * 1.5) {
+    tickLagCount++;
+    if (tickLagCount % 25 === 1) {
+      console.warn(`[tick lag] gap=${elapsed}ms expected=${TICK_MS.toFixed(1)}ms total_lag_events=${tickLagCount}`);
+    }
+  }
+
   const dt = Math.min(0.1, (now - lastTick) / 1000);
   lastTick = now;
 
@@ -529,26 +573,46 @@ setInterval(() => {
   refillFood();
   ensureBots();
   broadcastState();
+
+  // Periodic CPU sample to surface CPU pressure in logs
+  const work = Date.now() - now;
+  tickWorkCum += work;
+  tickWorkSamples++;
+  if (tickWorkSamples >= 220) { // ~10s at 22Hz
+    const avg = tickWorkCum / tickWorkSamples;
+    const pct = (avg / TICK_MS * 100).toFixed(0);
+    console.log(`[perf] tick avg=${avg.toFixed(1)}ms (${pct}% of budget) snakes=${snakes.size} clients=${clients.size}`);
+    tickWorkCum = 0;
+    tickWorkSamples = 0;
+  }
 }, TICK_MS);
 
 // ===== Broadcast =====
-function snakePayload(s) {
-  // Delta-encoded segments: [headX, headY, dx1, dy1, dx2, dy2, ...]
-  // Most deltas are small ints (segments are ~9 px apart) -> JSON ~50% smaller.
+function snakePayload(s, includeBody) {
+  // s = [headX, headY, dx1, dy1, ...] (delta) when body included; just
+  // [headX, headY] when culled to head-only. Either way s[0]/s[1] are
+  // always the head's absolute coords so the client can render the
+  // minimap dot + radar arrow without the body bytes.
   const segs = s.segments;
   const len = segs.length;
-  const seg = new Array(len * 2);
-  let prevX = Math.round(segs[0].x);
-  let prevY = Math.round(segs[0].y);
-  seg[0] = prevX;
-  seg[1] = prevY;
-  for (let i = 1; i < len; i++) {
-    const x = Math.round(segs[i].x);
-    const y = Math.round(segs[i].y);
-    seg[i * 2] = x - prevX;
-    seg[i * 2 + 1] = y - prevY;
-    prevX = x;
-    prevY = y;
+  const headX = Math.round(segs[0].x);
+  const headY = Math.round(segs[0].y);
+  let seg;
+  if (includeBody) {
+    seg = new Array(len * 2);
+    seg[0] = headX;
+    seg[1] = headY;
+    let prevX = headX, prevY = headY;
+    for (let i = 1; i < len; i++) {
+      const x = Math.round(segs[i].x);
+      const y = Math.round(segs[i].y);
+      seg[i * 2] = x - prevX;
+      seg[i * 2 + 1] = y - prevY;
+      prevX = x;
+      prevY = y;
+    }
+  } else {
+    seg = [headX, headY];
   }
   return {
     id: s.id,
@@ -556,18 +620,16 @@ function snakePayload(s) {
     hue: s.hue,
     s: seg,
     d: +s.direction.toFixed(3),
-    b: s.boosting && s.segments.length > MIN_BOOST_LENGTH,
+    b: s.boosting && len > MIN_BOOST_LENGTH,
     a: s.alive,
     bot: s.isBot,
+    n: len, // real length even when body culled (for client UI)
     l: s.isLeader || undefined,
     c: s.combo > 1 ? s.combo : undefined,
   };
 }
 
 function broadcastState() {
-  const allSnakes = [];
-  for (const s of snakes.values()) allSnakes.push(snakePayload(s));
-
   const lb = [...snakes.values()]
     .filter(s => s.alive)
     .sort((a, b) => b.segments.length - a.segments.length)
@@ -581,6 +643,11 @@ function broadcastState() {
     }));
 
   const baseTime = Date.now();
+  const recentKills = kills.slice(-12);
+  const cullRangeBase = VIEWPORT_RANGE * 1.4;
+  const aliveSnakes = [];
+  for (const s of snakes.values()) if (s.alive) aliveSnakes.push(s);
+
   for (const [sid, client] of clients) {
     const views = [];
     for (const ssid of client.slots) {
@@ -592,29 +659,54 @@ function broadcastState() {
     }
     if (views.length === 0) views.push({ x: 0, y: 0 });
 
+    const ourIds = client.slots; // small array, includes() is fine
+
+    // Build snake payloads — full body for nearby & for our own slots, head-only otherwise
+    const snakesPayload = new Array(aliveSnakes.length);
+    for (let i = 0; i < aliveSnakes.length; i++) {
+      const s = aliveSnakes[i];
+      let includeBody = ourIds.indexOf(s.id) >= 0;
+      if (!includeBody) {
+        const head = s.segments[0];
+        const reach = s.segments.length * SEGMENT_SPACING;
+        const r = cullRangeBase + reach;
+        const rSq = r * r;
+        for (let vi = 0; vi < views.length; vi++) {
+          const dx = head.x - views[vi].x;
+          const dy = head.y - views[vi].y;
+          if (dx * dx + dy * dy < rSq) { includeBody = true; break; }
+        }
+      }
+      snakesPayload[i] = snakePayload(s, includeBody);
+    }
+
     const range = VIEWPORT_RANGE;
     const fa = [];
     for (const f of food.values()) {
       let inRange = false;
-      for (const v of views) {
-        if (Math.abs(f.x - v.x) > range) continue;
-        if (Math.abs(f.y - v.y) > range) continue;
+      for (let vi = 0; vi < views.length; vi++) {
+        if (Math.abs(f.x - views[vi].x) > range) continue;
+        if (Math.abs(f.y - views[vi].y) > range) continue;
         inRange = true;
         break;
       }
       if (!inRange) continue;
       fa.push(f.id, Math.round(f.x), Math.round(f.y), f.hue, f.size);
     }
-    client.socket.emit('state', {
+
+    // volatile.emit drops the packet if this client's send buffer is backed
+    // up — far better than queueing stale state behind newer state, which is
+    // what made the lag feel cumulative under load.
+    client.socket.volatile.emit('state', {
       t: baseTime,
-      sn: allSnakes,
+      sn: snakesPayload,
       f: fa,
       lb,
       yourIds: client.slots,
       yourId: client.slots[0] || sid,
       world: WORLD_RADIUS,
       players: snakes.size,
-      kills: kills.slice(-12),
+      kills: recentKills,
     });
   }
 }

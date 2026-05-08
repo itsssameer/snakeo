@@ -67,7 +67,7 @@
   const HUES = [0, 28, 50, 90, 140, 175, 200, 225, 270, 305, 335];
   const FUNNY = ['SneakySnek', 'Slither', 'Mambo', 'Hisstrix', 'Coil', 'Wormie', 'Noodle', 'Slinky', 'Spaghet'];
   const FUNNY2 = ['Wiggles', 'Mamba', 'Linguini', 'Ramen', 'Boa', 'Squiggle', 'Zigzag'];
-  let tickInterval = 1000 / 28;
+  let tickInterval = 1000 / 22;
   // Physics constants (overwritten by server's hello payload). Defaults match server.
   const physics = {
     turnRate: 4.6,
@@ -1099,10 +1099,12 @@
     }
     if (!curr) return null;
     const cs = curr.sn.find(s => s.id === snakeId);
-    if (!cs) return null;
+    if (!cs || !cs.s) return null;
     if (!prev) return { x: cs.s[0], y: cs.s[1] };
     const ps = prev.sn.find(s => s.id === snakeId);
-    if (!ps) return { x: cs.s[0], y: cs.s[1] };
+    if (!ps || !ps.s) return { x: cs.s[0], y: cs.s[1] };
+    // Always lerp the head (first 2 elements) — works whether the body
+    // segments are present or culled to head-only.
     const dt = performance.now() - currRecvAt;
     const a = Math.min(MAX_INTERP_ALPHA, dt / tickInterval);
     return {
