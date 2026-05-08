@@ -510,6 +510,9 @@ body[data-mode="duo"] #leaderboard { display: none; }
 .touch-only { display: none; }
 @media (pointer: coarse), (hover: none) {
   body[data-mode="solo"] .touch-only { display: flex; }
+  /* 2P split-screen needs a keyboard — hide the option on touch */
+  .mode-tab[data-mode="duo"] { display: none; }
+  .mode-tabs { display: none; } /* only one mode left, no need for tabs */
 }
 
 /* Touch boost button — only on coarse-pointer (phones/tablets) in solo mode */

@@ -42,8 +42,11 @@
   const bountyNameEl = document.getElementById('bounty-name');
   const flashEl = document.getElementById('flash');
 
+  // ===== Mobile detection (drives perf + UX) =====
+  const isTouchDevice = window.matchMedia('(pointer: coarse)').matches || (navigator.maxTouchPoints || 0) > 1;
+
   // ===== Canvas sizing =====
-  let dpr = Math.min(window.devicePixelRatio || 1, 2);
+  let dpr = Math.min(window.devicePixelRatio || 1, isTouchDevice ? 1.4 : 2);
   function resize() {
     canvas.width = Math.floor(window.innerWidth * dpr);
     canvas.height = Math.floor(window.innerHeight * dpr);
@@ -57,7 +60,42 @@
   const HUES = [0, 28, 50, 90, 140, 175, 200, 225, 270, 305, 335];
   const FUNNY = ['SneakySnek', 'Slither', 'Mambo', 'Hisstrix', 'Coil', 'Wormie', 'Noodle', 'Slinky', 'Spaghet'];
   const FUNNY2 = ['Wiggles', 'Mamba', 'Linguini', 'Ramen', 'Boa', 'Squiggle', 'Zigzag'];
-  const tickInterval = 1000 / 30;
+  let tickInterval = 1000 / 22;
+  const PARTICLE_CAP = isTouchDevice ? 220 : 800;
+  const PARTICLE_SCALE = isTouchDevice ? 0.4 : 1;
+  const COOL_NAMES = [
+    'ShadowFang', 'NeonCobra', 'VenomSlither', 'TurboSnek', 'PixelPython',
+    'GoldVenom', 'CyberCoil', 'RogueViper', 'SkullSnek', 'GlitchBoa',
+    'StealthFang', 'FrostMamba', 'SonicSlither', 'NovaSnek', 'PhoenixCoil',
+    'LaserVenom', 'GhostSlither', 'DarkRook', 'HyperHiss', 'NeonHydra',
+  ];
+
+  function deviceUUID() {
+    let u = null;
+    try { u = localStorage.getItem('snakeo:uuid'); } catch {}
+    if (!u) {
+      try {
+        u = (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID()
+          : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+              const r = Math.random() * 16 | 0;
+              return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+            });
+      } catch {
+        u = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+          const r = Math.random() * 16 | 0;
+          return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+        });
+      }
+      try { localStorage.setItem('snakeo:uuid', u); } catch {}
+    }
+    return u;
+  }
+
+  function autoName() {
+    const u = deviceUUID().replace(/[^a-fA-F0-9]/g, '').slice(0, 3).toUpperCase();
+    const base = COOL_NAMES[Math.floor(Math.random() * COOL_NAMES.length)];
+    return base + u;
+  }
 
   const CONTROLS = {
     solo: {
@@ -162,9 +200,9 @@
   // ===== Particles =====
   const particles = [];
   function spawnParticles(x, y, opts = {}) {
-    const count = opts.count || 12;
+    const count = Math.max(2, Math.round((opts.count || 12) * PARTICLE_SCALE));
     const speed = opts.speed || 3;
-    const life = opts.life || 700;
+    const life = (opts.life || 700) * (isTouchDevice ? 0.8 : 1);
     const baseHue = opts.hue ?? 0;
     const size = opts.size || 3;
     for (let i = 0; i < count; i++) {
@@ -180,7 +218,7 @@
         size: size * (0.7 + Math.random() * 0.7),
       });
     }
-    if (particles.length > 800) particles.splice(0, particles.length - 800);
+    if (particles.length > PARTICLE_CAP) particles.splice(0, particles.length - PARTICLE_CAP);
   }
   function updateParticles() {
     const now = performance.now();
@@ -393,9 +431,10 @@
   nameInputs[1].placeholder = FUNNY2[Math.floor(Math.random() * FUNNY2.length)];
 
   // ===== Persistence =====
+  let savedName0 = null;
   try {
-    const n0 = localStorage.getItem('snakeo:p0name');
-    if (n0) nameInputs[0].value = n0;
+    savedName0 = localStorage.getItem('snakeo:p0name');
+    if (savedName0) nameInputs[0].value = savedName0;
     const n1 = localStorage.getItem('snakeo:p1name');
     if (n1) nameInputs[1].value = n1;
     const h0 = localStorage.getItem('snakeo:p0hue');
@@ -409,10 +448,26 @@
       buildColorPicker(1);
     }
     const savedMode = localStorage.getItem('snakeo:mode');
-    if (savedMode === 'duo') {
+    if (savedMode === 'duo' && !isTouchDevice) {
       document.querySelector('.mode-tab[data-mode="duo"]').click();
     }
   } catch {}
+
+  // ===== Mobile zero-tap auto-join =====
+  // On touch devices, always auto-join as soon as the socket connects so cousins
+  // can just open the URL and start playing. First visit gets a unique auto-name
+  // (cool base + 3-char hex from a persistent device UUID), so cousins on different
+  // phones never clash. Subsequent visits reuse their saved name.
+  let autoJoinPending = false;
+  if (isTouchDevice) {
+    if (!savedName0) {
+      const auto = autoName();
+      nameInputs[0].value = auto;
+      pickedHue[0] = HUES[Math.floor(Math.random() * HUES.length)];
+      buildColorPicker(0);
+    }
+    autoJoinPending = true;
+  }
 
   // ===== Mode tabs =====
   document.querySelectorAll('.mode-tab').forEach(btn => {
@@ -526,6 +581,11 @@
     statusEl.classList.remove('error');
     playBtn.disabled = false;
     playBtn.textContent = 'PLAY';
+    if (autoJoinPending) {
+      autoJoinPending = false;
+      // Tiny delay so first frame paints and audio context can unlock on first tap
+      setTimeout(() => startGame(), 120);
+    }
   });
   socket.on('connect_error', (err) => {
     statusEl.textContent = 'Connection failed: ' + (err && err.message ? err.message : err);
@@ -547,6 +607,7 @@
   socket.on('hello', (data) => {
     if (!data) return;
     if (data.world) world = data.world;
+    if (data.tickRate) tickInterval = 1000 / data.tickRate;
     if (Array.isArray(data.hazards)) hazards = data.hazards;
   });
   socket.on('state', (data) => {
@@ -685,6 +746,7 @@
   // Touch steering (solo only) — track a single canvas touch as the steering finger
   let steerTouchId = null;
   canvas.addEventListener('touchstart', (e) => {
+    sfx.resume();
     if (players.length !== 1 || players[0].controls?.type !== 'mouse') return;
     if (steerTouchId === null && e.changedTouches.length > 0) {
       const t = e.changedTouches[0];
@@ -882,6 +944,7 @@
     const radius = Math.min(vw, vh) / 2 - margin;
     const time = performance.now();
 
+    const candidates = [];
     for (const s of curr.sn) {
       if (!s.a || s.bot) continue;
       if (myIds.has(s.id)) continue;
@@ -891,13 +954,19 @@
       const sx = head.x + ox;
       const sy = head.y + oy;
       if (sx >= vx + 30 && sx <= vx + vw - 30 && sy >= vy + 30 && sy <= vy + vh - 30) continue;
-
       const dx = head.x - player.camX;
       const dy = head.y - player.camY;
-      const ang = Math.atan2(dy, dx);
+      candidates.push({ s, head, dx, dy, dist: Math.hypot(dx, dy) });
+    }
+    candidates.sort((a, b) => (b.s.l ? 1 : 0) - (a.s.l ? 1 : 0) || a.dist - b.dist);
+    const limit = isTouchDevice ? 4 : 8;
+
+    for (let i = 0; i < Math.min(limit, candidates.length); i++) {
+      const c = candidates[i];
+      const s = c.s;
+      const ang = Math.atan2(c.dy, c.dx);
       const ax = ccX + Math.cos(ang) * radius;
       const ay = ccY + Math.sin(ang) * radius;
-      const dist = Math.hypot(dx, dy);
 
       ctx.save();
       ctx.translate(ax, ay);
@@ -922,11 +991,17 @@
       ctx.restore();
 
       ctx.font = '600 11px Segoe UI, Inter, sans-serif';
-      ctx.fillStyle = s.l ? '#ffe066' : `hsl(${s.hue}, 85%, 78%)`;
       ctx.textAlign = 'center';
-      ctx.shadowColor = 'rgba(0,0,0,0.85)';
-      ctx.shadowBlur = 4;
-      const label = (s.l ? '💰 ' : '') + s.name + ' · ' + Math.round(dist);
+      const label = (s.l ? '💰 ' : '') + s.name + ' · ' + Math.round(c.dist);
+      if (isTouchDevice) {
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+        ctx.strokeText(label, ax, ay + 22);
+      } else {
+        ctx.shadowColor = 'rgba(0,0,0,0.85)';
+        ctx.shadowBlur = 4;
+      }
+      ctx.fillStyle = s.l ? '#ffe066' : `hsl(${s.hue}, 85%, 78%)`;
       ctx.fillText(label, ax, ay + 22);
       ctx.shadowBlur = 0;
     }
@@ -1036,32 +1111,37 @@
 
       const isGold = fh === 51 && fs >= 4;
       const r = isGold ? 8 : 4 + fs * 1.4;
-      const pulse = 1 + Math.sin(t + id * 0.7) * 0.18;
-      const glowR = r * (isGold ? 4.5 : 3) * pulse;
 
-      const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, glowR);
-      if (isGold) {
-        g.addColorStop(0, 'rgba(255, 220, 100, 0.85)');
-        g.addColorStop(0.5, 'rgba(255, 200, 80, 0.3)');
-        g.addColorStop(1, 'rgba(255, 200, 80, 0)');
-      } else {
-        g.addColorStop(0, `hsla(${fh}, 90%, 70%, 0.55)`);
-        g.addColorStop(1, `hsla(${fh}, 90%, 70%, 0)`);
+      // Outer glow gradient is the most expensive part — keep on desktop and for gold orbs only on mobile
+      if (!isTouchDevice || isGold) {
+        const pulse = 1 + Math.sin(t + id * 0.7) * 0.18;
+        const glowR = r * (isGold ? 4.5 : 3) * pulse;
+        const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, glowR);
+        if (isGold) {
+          g.addColorStop(0, 'rgba(255, 220, 100, 0.85)');
+          g.addColorStop(0.5, 'rgba(255, 200, 80, 0.3)');
+          g.addColorStop(1, 'rgba(255, 200, 80, 0)');
+        } else {
+          g.addColorStop(0, `hsla(${fh}, 90%, 70%, 0.55)`);
+          g.addColorStop(1, `hsla(${fh}, 90%, 70%, 0)`);
+        }
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(sx, sy, glowR, 0, Math.PI * 2);
+        ctx.fill();
       }
-      ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.arc(sx, sy, glowR, 0, Math.PI * 2);
-      ctx.fill();
 
       ctx.fillStyle = isGold ? '#ffd95a' : `hsl(${fh}, 95%, 65%)`;
       ctx.beginPath();
       ctx.arc(sx, sy, r, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.fillStyle = isGold ? 'rgba(255, 255, 200, 0.95)' : `hsla(${fh}, 100%, 90%, 0.7)`;
-      ctx.beginPath();
-      ctx.arc(sx - r * 0.3, sy - r * 0.3, r * 0.4, 0, Math.PI * 2);
-      ctx.fill();
+      if (!isTouchDevice || isGold) {
+        ctx.fillStyle = isGold ? 'rgba(255, 255, 200, 0.95)' : `hsla(${fh}, 100%, 90%, 0.7)`;
+        ctx.beginPath();
+        ctx.arc(sx - r * 0.3, sy - r * 0.3, r * 0.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
   }
 
@@ -1110,7 +1190,7 @@
       ctx.lineTo(seg[i] + ox, seg[i + 1] + oy);
     }
 
-    if (s.b) {
+    if (s.b && !isTouchDevice) {
       ctx.shadowColor = lightColor;
       ctx.shadowBlur = 22;
     } else {
@@ -1177,9 +1257,15 @@
     ctx.font = '600 12px Segoe UI, Inter, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
+    if (isTouchDevice) {
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+      ctx.strokeText(label, headX, headY - r - 8);
+    } else {
+      ctx.shadowColor = 'rgba(0,0,0,0.85)';
+      ctx.shadowBlur = 4;
+    }
     ctx.fillStyle = s.l ? '#ffe066' : (isLocal ? '#ffe066' : 'rgba(255,255,255,0.92)');
-    ctx.shadowColor = 'rgba(0,0,0,0.85)';
-    ctx.shadowBlur = 4;
     ctx.fillText(label, headX, headY - r - 8);
     ctx.shadowBlur = 0;
   }

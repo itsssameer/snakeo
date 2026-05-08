@@ -8,14 +8,20 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders: (res, p) => {
+    if (p.endsWith('.js') || p.endsWith('.css') || p.endsWith('.html')) {
+      res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate');
+    }
+  },
+}));
 
 // ===== Tunable game constants =====
 const WORLD_RADIUS = 2200;
-const TICK_RATE = 30;
+const TICK_RATE = 22; // 22 Hz — Render-free-tier friendly
 const TICK_MS = 1000 / TICK_RATE;
-const TARGET_FOOD = 700;
-const MAX_FOOD = 1800;
+const TARGET_FOOD = 600;
+const MAX_FOOD = 1500;
 const BASE_SPEED = 175;
 const BOOST_SPEED = 320;
 const TURN_RATE = 4.6;
@@ -25,10 +31,10 @@ const STARTING_SEGMENTS = 18;
 const MIN_BOOST_LENGTH = 14;
 const BOOST_DRAIN_PER_SEC = 6;
 const FOOD_PICKUP_RADIUS = 22;
-const NUM_BOTS = 8;
-const HUNTER_BOTS = 2;
+const NUM_BOTS = 5;
+const HUNTER_BOTS = 1;
 const SPAWN_INVINCIBLE_MS = 2000;
-const VIEWPORT_RANGE = 1400;
+const VIEWPORT_RANGE = 1150;
 const HAZARD_COUNT = 14;
 const HAZARD_MIN_RADIUS = 320;
 const GOLD_ORB_CHANCE = 0.025;
