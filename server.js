@@ -618,6 +618,13 @@ io.on('connection', (socket) => {
     tickRate: TICK_RATE,
     yourId: id,
     hazards: HAZARDS,
+    physics: {
+      turnRate: TURN_RATE,
+      baseSpeed: BASE_SPEED,
+      boostSpeed: BOOST_SPEED,
+      segSpacing: SEGMENT_SPACING,
+      minBoostLen: MIN_BOOST_LENGTH,
+    },
   });
 
   socket.on('join', (msg) => {

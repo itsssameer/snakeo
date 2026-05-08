@@ -1,7 +1,9 @@
 (() => {
   'use strict';
 
-  const socket = io();
+  // WebSocket-only transport: skips Socket.IO's HTTP long-polling probe and
+  // upgrades, which costs a couple of round-trips on Render free.
+  const socket = io({ transports: ['websocket'], upgrade: false });
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d', { alpha: false });
   const minimap = document.getElementById('minimap');
@@ -34,7 +36,6 @@
     document.getElementById('death-half-0'),
     document.getElementById('death-half-1'),
   ];
-  const touchBoost = document.getElementById('touch-boost');
   const killFeedEl = document.getElementById('kill-feed');
   const comboEl = document.getElementById('combo');
   const milestoneEl = document.getElementById('milestone');
@@ -61,6 +62,14 @@
   const FUNNY = ['SneakySnek', 'Slither', 'Mambo', 'Hisstrix', 'Coil', 'Wormie', 'Noodle', 'Slinky', 'Spaghet'];
   const FUNNY2 = ['Wiggles', 'Mamba', 'Linguini', 'Ramen', 'Boa', 'Squiggle', 'Zigzag'];
   let tickInterval = 1000 / 22;
+  // Physics constants (overwritten by server's hello payload). Defaults match server.
+  const physics = {
+    turnRate: 4.6,
+    baseSpeed: 175,
+    boostSpeed: 320,
+    segSpacing: 9,
+    minBoostLen: 14,
+  };
   const PARTICLE_CAP = isTouchDevice ? 220 : 800;
   const PARTICLE_SCALE = isTouchDevice ? 0.4 : 1;
   const COOL_NAMES = [
@@ -95,6 +104,125 @@
     const u = deviceUUID().replace(/[^a-fA-F0-9]/g, '').slice(0, 3).toUpperCase();
     const base = COOL_NAMES[Math.floor(Math.random() * COOL_NAMES.length)];
     return base + u;
+  }
+
+  // ===== Client-side predictor =====
+  // Runs the server's exact physics locally for the player's own snake so
+  // input -> visual response feels instant even with 30-200ms RTT. Server is
+  // still authoritative; we lerp toward server snapshots smoothly.
+  class Predictor {
+    constructor() {
+      this.segments = [];
+      this.direction = 0;
+      this.alive = false;
+      this.lastUpdateAt = 0;
+    }
+    reset() {
+      this.alive = false;
+      this.segments.length = 0;
+    }
+    initFromServer(seg, dir) {
+      this.segments = [];
+      for (let i = 0; i < seg.length; i += 2) {
+        this.segments.push({ x: seg[i], y: seg[i + 1] });
+      }
+      this.direction = dir;
+      this.alive = true;
+      this.lastUpdateAt = performance.now();
+    }
+    update(targetDir, boost) {
+      if (!this.alive || this.segments.length < 2) return;
+      const now = performance.now();
+      const dt = Math.min(0.04, (now - this.lastUpdateAt) / 1000);
+      this.lastUpdateAt = now;
+      if (dt <= 0) return;
+
+      let diff = targetDir - this.direction;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      const maxTurn = physics.turnRate * dt;
+      this.direction += Math.max(-maxTurn, Math.min(maxTurn, diff));
+
+      const speed = (boost && this.segments.length > physics.minBoostLen)
+        ? physics.boostSpeed : physics.baseSpeed;
+      this.segments[0].x += Math.cos(this.direction) * speed * dt;
+      this.segments[0].y += Math.sin(this.direction) * speed * dt;
+
+      const ssp = physics.segSpacing;
+      const sspSq = ssp * ssp;
+      for (let i = 1; i < this.segments.length; i++) {
+        const dx = this.segments[i - 1].x - this.segments[i].x;
+        const dy = this.segments[i - 1].y - this.segments[i].y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > sspSq) {
+          const d = Math.sqrt(d2);
+          const t = (d - ssp) / d;
+          this.segments[i].x += dx * t;
+          this.segments[i].y += dy * t;
+        }
+      }
+    }
+    reconcile(seg, dir) {
+      if (!this.alive) {
+        this.initFromServer(seg, dir);
+        return;
+      }
+      const targetLen = seg.length / 2;
+      while (this.segments.length < targetLen) {
+        const tail = this.segments[this.segments.length - 1] || { x: seg[0], y: seg[1] };
+        this.segments.push({ x: tail.x, y: tail.y });
+      }
+      while (this.segments.length > targetLen) this.segments.pop();
+
+      const headDX = seg[0] - this.segments[0].x;
+      const headDY = seg[1] - this.segments[0].y;
+      if (headDX * headDX + headDY * headDY > 250 * 250) {
+        // Big jump (respawn / teleport) — snap
+        this.initFromServer(seg, dir);
+        return;
+      }
+
+      // Smooth lerp toward authoritative state
+      const lerpAmt = 0.16;
+      for (let i = 0; i < this.segments.length; i++) {
+        const sx = seg[i * 2], sy = seg[i * 2 + 1];
+        this.segments[i].x += (sx - this.segments[i].x) * lerpAmt;
+        this.segments[i].y += (sy - this.segments[i].y) * lerpAmt;
+      }
+      let dirDiff = dir - this.direction;
+      while (dirDiff > Math.PI) dirDiff -= Math.PI * 2;
+      while (dirDiff < -Math.PI) dirDiff += Math.PI * 2;
+      this.direction += dirDiff * lerpAmt;
+    }
+    exportFlat() {
+      const out = new Array(this.segments.length * 2);
+      for (let i = 0; i < this.segments.length; i++) {
+        out[i * 2] = this.segments[i].x;
+        out[i * 2 + 1] = this.segments[i].y;
+      }
+      return out;
+    }
+  }
+
+  function computePlayerTargetDir(p, currentDir) {
+    if (!p) return currentDir;
+    const c = p.controls;
+    if (c?.type === 'mouse') {
+      const cw = window.innerWidth, ch = window.innerHeight;
+      return Math.atan2(mouseY - ch / 2, mouseX - cw / 2);
+    } else if (c?.type === 'keyboard') {
+      const turn = (p.turnRight ? 1 : 0) - (p.turnLeft ? 1 : 0);
+      if (turn !== 0) return currentDir + turn * 1.8;
+    }
+    return currentDir;
+  }
+
+  function updatePredictors() {
+    for (const p of players) {
+      if (!p.alive || !p.predictor || !p.predictor.alive) continue;
+      const td = computePlayerTargetDir(p, p.predictor.direction);
+      p.predictor.update(td, p.boost);
+    }
   }
 
   const CONTROLS = {
@@ -391,6 +519,7 @@
       this.deathLength = 0;
       this.camX = 0;
       this.camY = 0;
+      this.predictor = new Predictor();
     }
   }
 
@@ -609,6 +738,13 @@
     if (data.world) world = data.world;
     if (data.tickRate) tickInterval = 1000 / data.tickRate;
     if (Array.isArray(data.hazards)) hazards = data.hazards;
+    if (data.physics) {
+      if (typeof data.physics.turnRate === 'number') physics.turnRate = data.physics.turnRate;
+      if (typeof data.physics.baseSpeed === 'number') physics.baseSpeed = data.physics.baseSpeed;
+      if (typeof data.physics.boostSpeed === 'number') physics.boostSpeed = data.physics.boostSpeed;
+      if (typeof data.physics.segSpacing === 'number') physics.segSpacing = data.physics.segSpacing;
+      if (typeof data.physics.minBoostLen === 'number') physics.minBoostLen = data.physics.minBoostLen;
+    }
   });
   socket.on('state', (data) => {
     if (!data) return;
@@ -627,6 +763,7 @@
       if (!p.id) continue;
       const me = data.sn.find(s => s.id === p.id);
       if (me && me.a) {
+        const wasAlive = p.alive;
         if (p.dead) {
           p.dead = false;
           hideDeathOverlay(p.slot);
@@ -645,17 +782,25 @@
         p.headX = me.s[0];
         p.headY = me.s[1];
         p.lastDir = me.d;
+        // Client-side prediction reconciliation
+        if (!wasAlive || !p.predictor.alive) {
+          p.predictor.initFromServer(me.s, me.d);
+        } else {
+          p.predictor.reconcile(me.s, me.d);
+        }
       } else if (me && !me.a) {
         if (p.alive && performance.now() > p.respawnGraceUntil) {
           p.alive = false;
           p.dead = true;
           p.deathLength = p.length;
+          p.predictor.reset();
           showDeathOverlay(p.slot, p.length);
         }
       } else if (!me && p.alive && performance.now() > p.respawnGraceUntil) {
         p.alive = false;
         p.dead = true;
         p.deathLength = p.length;
+        p.predictor.reset();
         showDeathOverlay(p.slot, p.length);
       }
     }
@@ -743,64 +888,77 @@
     }
   });
 
-  // Touch steering (solo only) — track a single canvas touch as the steering finger
+  // Touch input (solo only):
+  //  - One finger: steer in the direction it's pointing
+  //  - Double-tap-and-hold: the second tap held activates BOOST while held
   let steerTouchId = null;
+  let boostTouchId = null;
+  let steerStartedAt = 0;
+  let lastQuickTapEndAt = 0;
+  const DOUBLE_TAP_GAP_MS = 280;
+  const QUICK_TAP_MAX_MS = 220;
+
+  function isTouchModePlayer() {
+    return players.length === 1 && players[0]?.controls?.type === 'mouse';
+  }
+
   canvas.addEventListener('touchstart', (e) => {
     sfx.resume();
-    if (players.length !== 1 || players[0].controls?.type !== 'mouse') return;
-    if (steerTouchId === null && e.changedTouches.length > 0) {
-      const t = e.changedTouches[0];
-      steerTouchId = t.identifier;
-      mouseX = t.clientX;
-      mouseY = t.clientY;
+    if (!isTouchModePlayer()) return;
+    const now = performance.now();
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i];
+      if (boostTouchId === null && lastQuickTapEndAt > 0 && (now - lastQuickTapEndAt) < DOUBLE_TAP_GAP_MS) {
+        // Second tap of a double-tap-and-hold → BOOST
+        boostTouchId = t.identifier;
+        if (players[0]) players[0].boost = true;
+        lastQuickTapEndAt = 0;
+        mouseX = t.clientX;
+        mouseY = t.clientY;
+        const hint = document.getElementById('boost-hint');
+        if (hint) { hint.classList.add('faded'); setTimeout(() => hint.remove(), 800); }
+      } else if (steerTouchId === null) {
+        steerTouchId = t.identifier;
+        steerStartedAt = now;
+        mouseX = t.clientX;
+        mouseY = t.clientY;
+      }
     }
     if (players[0].dead) respawnPlayer(0);
     e.preventDefault();
   }, { passive: false });
+
   canvas.addEventListener('touchmove', (e) => {
-    if (players.length !== 1 || players[0].controls?.type !== 'mouse') return;
+    if (!isTouchModePlayer()) return;
     for (let i = 0; i < e.changedTouches.length; i++) {
       const t = e.changedTouches[i];
-      if (t.identifier === steerTouchId) {
+      if (t.identifier === steerTouchId || t.identifier === boostTouchId) {
         mouseX = t.clientX;
         mouseY = t.clientY;
-        break;
       }
     }
     e.preventDefault();
   }, { passive: false });
-  function endSteerTouch(e) {
+
+  function endTouch(e) {
+    const now = performance.now();
     for (let i = 0; i < e.changedTouches.length; i++) {
-      if (e.changedTouches[i].identifier === steerTouchId) {
+      const t = e.changedTouches[i];
+      if (t.identifier === steerTouchId) {
+        const dur = now - steerStartedAt;
         steerTouchId = null;
-        break;
+        // A short tap arms the double-tap-and-hold window
+        if (dur > 0 && dur < QUICK_TAP_MAX_MS) lastQuickTapEndAt = now;
+        else lastQuickTapEndAt = 0;
+      } else if (t.identifier === boostTouchId) {
+        boostTouchId = null;
+        if (players[0]) players[0].boost = false;
+        lastQuickTapEndAt = 0;
       }
     }
   }
-  canvas.addEventListener('touchend', endSteerTouch);
-  canvas.addEventListener('touchcancel', endSteerTouch);
-
-  // Boost button (touch + mouse via pointer events)
-  function setTouchBoost(on) {
-    for (const p of players) if (p.controls?.type === 'mouse') p.boost = on;
-    touchBoost.classList.toggle('active', on);
-  }
-  if (touchBoost) {
-    touchBoost.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      sfx.resume();
-      try { touchBoost.setPointerCapture(e.pointerId); } catch {}
-      setTouchBoost(true);
-    });
-    const releaseBoost = (e) => {
-      try { touchBoost.releasePointerCapture(e.pointerId); } catch {}
-      setTouchBoost(false);
-    };
-    touchBoost.addEventListener('pointerup', releaseBoost);
-    touchBoost.addEventListener('pointercancel', releaseBoost);
-    touchBoost.addEventListener('pointerleave', releaseBoost);
-    touchBoost.addEventListener('contextmenu', (e) => e.preventDefault());
-  }
+  canvas.addEventListener('touchend', endTouch);
+  canvas.addEventListener('touchcancel', endTouch);
 
   // ===== 30Hz input loop =====
   setInterval(() => {
@@ -832,6 +990,12 @@
 
   // ===== Interpolation =====
   function getInterpolatedHead(snakeId) {
+    // Local players: use the predictor for instant input response
+    for (const p of players) {
+      if (p.id === snakeId && p.predictor && p.predictor.alive && p.predictor.segments.length > 0) {
+        return { x: p.predictor.segments[0].x, y: p.predictor.segments[0].y };
+      }
+    }
     if (!curr) return null;
     const cs = curr.sn.find(s => s.id === snakeId);
     if (!cs) return null;
@@ -867,10 +1031,11 @@
 
     const w = window.innerWidth, h = window.innerHeight;
 
-    // Decay shake once per frame and update particles once per frame
+    // Decay shake once per frame and update particles + predictors once per frame
     if (shakeAmount > 0.5) shakeAmount *= 0.85;
     else shakeAmount = 0;
     updateParticles();
+    updatePredictors();
 
     if (!curr || !players.length) {
       ctx.fillStyle = '#06060e';
@@ -1154,11 +1319,17 @@
 
   function drawSnake(s, ox, oy, vx, vy, vw, vh, player, time) {
     if (!s.a) return;
-    const seg = lerpSegments(s);
+    const isLocal = player && s.id === player.id;
+    // Use the predictor's segments for our own snake — feels instant.
+    let seg;
+    if (isLocal && player.predictor && player.predictor.alive && player.predictor.segments.length > 1) {
+      seg = player.predictor.exportFlat();
+    } else {
+      seg = lerpSegments(s);
+    }
     if (!seg || seg.length < 4) return;
 
     const r = 9;
-    const isLocal = player && s.id === player.id;
     const reach = (seg.length / 2) * 9 + 30;
     const hx0 = seg[0] + ox, hy0 = seg[1] + oy;
     if (hx0 + reach < vx || hx0 - reach > vx + vw) return;

@@ -515,42 +515,34 @@ body[data-mode="duo"] #leaderboard { display: none; }
   .mode-tabs { display: none; } /* only one mode left, no need for tabs */
 }
 
-/* Touch boost button — only on coarse-pointer (phones/tablets) in solo mode */
-#touch-boost {
-  position: fixed;
-  bottom: 24px;
-  right: 24px;
-  width: 86px;
-  height: 86px;
-  border-radius: 50%;
-  border: 2px solid rgba(255, 224, 102, 0.55);
-  background: rgba(255, 224, 102, 0.18);
+/* Boost-hint pill (touch only, fades after first boost) */
+.boost-hint {
+  position: absolute;
+  bottom: max(20px, env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(8, 10, 22, 0.65);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
+  border: 1px solid rgba(255, 224, 102, 0.4);
   color: #ffe066;
-  font-size: 38px;
-  cursor: pointer;
-  z-index: 20;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 12px;
+  letter-spacing: 0.4px;
+  pointer-events: none;
+  z-index: 12;
   display: none;
-  align-items: center;
-  justify-content: center;
-  user-select: none;
-  -webkit-user-select: none;
-  touch-action: none;
-  pointer-events: auto;
-  font-family: inherit;
-  box-shadow: 0 4px 20px rgba(255, 224, 102, 0.18);
-  transition: transform 0.06s ease, background 0.1s ease;
+  animation: boostHintPulse 2.2s ease-in-out infinite;
 }
-
-#touch-boost.active {
-  background: rgba(255, 224, 102, 0.5);
-  transform: scale(0.94);
-  box-shadow: 0 0 30px rgba(255, 224, 102, 0.55);
+.boost-hint.faded { opacity: 0; transition: opacity 0.6s ease; }
+@keyframes boostHintPulse {
+  0%, 100% { box-shadow: 0 0 0 rgba(255, 224, 102, 0.0); }
+  50% { box-shadow: 0 0 18px rgba(255, 224, 102, 0.35); }
 }
 
 @media (pointer: coarse), (hover: none) {
-  body[data-mode="solo"] #touch-boost { display: flex; }
+  body[data-mode="solo"] .boost-hint { display: block; }
   /* Bigger color swatches and tabs for fingers */
   .swatch { width: 36px; height: 36px; }
   .mode-tab { padding: 12px 12px; font-size: 13px; }
