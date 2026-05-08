@@ -50,7 +50,10 @@
   const isTouchDevice = window.matchMedia('(pointer: coarse)').matches || (navigator.maxTouchPoints || 0) > 1;
 
   // ===== Canvas sizing =====
-  let dpr = Math.min(window.devicePixelRatio || 1, isTouchDevice ? 1.4 : 2);
+  // On mobile we cap DPR at 1.0 — flagship phones are 3x density and Canvas2D
+  // is fill-rate-bound. 1.0 looks crisp at viewing distance and renders 3x
+  // fewer pixels per frame than native, keeping 60fps trivially.
+  let dpr = Math.min(window.devicePixelRatio || 1, isTouchDevice ? 1.0 : 2);
   function resize() {
     canvas.width = Math.floor(window.innerWidth * dpr);
     canvas.height = Math.floor(window.innerHeight * dpr);
@@ -64,7 +67,7 @@
   const HUES = [0, 28, 50, 90, 140, 175, 200, 225, 270, 305, 335];
   const FUNNY = ['SneakySnek', 'Slither', 'Mambo', 'Hisstrix', 'Coil', 'Wormie', 'Noodle', 'Slinky', 'Spaghet'];
   const FUNNY2 = ['Wiggles', 'Mamba', 'Linguini', 'Ramen', 'Boa', 'Squiggle', 'Zigzag'];
-  let tickInterval = 1000 / 22;
+  let tickInterval = 1000 / 28;
   // Physics constants (overwritten by server's hello payload). Defaults match server.
   const physics = {
     turnRate: 4.6,
@@ -824,6 +827,20 @@
   });
   socket.on('state', (data) => {
     if (!data) return;
+    // Decode delta-encoded segments in-place: [hx, hy, dx, dy, ...] -> absolute
+    if (data.sn) {
+      for (let si = 0; si < data.sn.length; si++) {
+        const seg = data.sn[si].s;
+        if (!seg || seg.length < 4) continue;
+        let x = seg[0], y = seg[1];
+        for (let i = 2; i < seg.length; i += 2) {
+          x += seg[i];
+          y += seg[i + 1];
+          seg[i] = x;
+          seg[i + 1] = y;
+        }
+      }
+    }
     prev = curr;
     curr = data;
     currRecvAt = performance.now();
@@ -1068,10 +1085,10 @@
   }, 1000 / 30);
 
   // ===== Interpolation =====
-  // Allow extrapolation up to 1.5 ticks past the latest snapshot — masks the
-  // gap when packets arrive late on Render free, which was causing the
-  // 'jumpy' look on other snakes.
-  const MAX_INTERP_ALPHA = 1.5;
+  // Allow extrapolation up to 2x past the latest snapshot — masks bigger
+  // network jitters on cellular while still snapping cleanly when reality
+  // arrives. Combined with delta encoding the snapshots arrive faster too.
+  const MAX_INTERP_ALPHA = 2.0;
 
   function getInterpolatedHead(snakeId) {
     // Local players: use the predictor for instant input response
@@ -1301,8 +1318,26 @@
       if (sx + margin < vx || sx - margin > vx + vw) continue;
       if (sy + margin < vy || sy - margin > vy + vh) continue;
 
-      // Outer pulsing glow
       const pulse = 1 + Math.sin(t * 0.004 + h.id) * 0.12;
+
+      if (isTouchDevice) {
+        // Mobile: cheap two-circle hazard. Visually clear, ~5x less Canvas work.
+        ctx.fillStyle = 'rgba(255, 60, 60, 0.22)';
+        ctx.beginPath();
+        ctx.arc(sx, sy, h.r * 1.45 * pulse, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#d92525';
+        ctx.beginPath();
+        ctx.arc(sx, sy, h.r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffe6a0';
+        ctx.beginPath();
+        ctx.arc(sx, sy, h.r * 0.32, 0, Math.PI * 2);
+        ctx.fill();
+        continue;
+      }
+
+      // Desktop: full glow + spinning spike rotor
       const gr = h.r * 1.6 * pulse;
       const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, gr);
       g.addColorStop(0, 'rgba(255, 60, 60, 0.55)');
@@ -1313,7 +1348,6 @@
       ctx.arc(sx, sy, gr, 0, Math.PI * 2);
       ctx.fill();
 
-      // Spinning spike body
       ctx.save();
       ctx.translate(sx, sy);
       ctx.rotate((t * 0.0009 * (h.spin || 1) + h.id) % (Math.PI * 2));
@@ -1338,7 +1372,6 @@
       ctx.strokeStyle = 'rgba(255, 200, 200, 0.5)';
       ctx.stroke();
 
-      // Inner core
       ctx.beginPath();
       ctx.arc(0, 0, h.r * 0.28, 0, Math.PI * 2);
       ctx.fillStyle = '#ffe6a0';
@@ -1464,14 +1497,19 @@
     ctx.lineWidth = r * 2;
     ctx.stroke();
 
-    const speedFactor = s.b ? 4.0 : 1.4;
-    ctx.strokeStyle = lightColor;
-    ctx.lineWidth = r * 0.6;
-    ctx.setLineDash([12, 22]);
-    const idHash = (s.id && typeof s.id === 'string') ? (parseInt(s.id.slice(0, 4), 36) || 0) : 0;
-    ctx.lineDashOffset = -((time * 0.05 * speedFactor + idHash * 0.001) % 10000);
-    ctx.stroke();
-    ctx.setLineDash([]);
+    // Animated dashed stripe — desktop only. On mobile this stroke costs more
+    // than it adds because Canvas2D recomputes the dash pattern over the
+    // whole polyline every frame.
+    if (!isTouchDevice) {
+      const speedFactor = s.b ? 4.0 : 1.4;
+      ctx.strokeStyle = lightColor;
+      ctx.lineWidth = r * 0.6;
+      ctx.setLineDash([12, 22]);
+      const idHash = (s.id && typeof s.id === 'string') ? (parseInt(s.id.slice(0, 4), 36) || 0) : 0;
+      ctx.lineDashOffset = -((time * 0.05 * speedFactor + idHash * 0.001) % 10000);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
 
     // Eyes
     const headX = seg[0] + ox, headY = seg[1] + oy;

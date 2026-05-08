@@ -18,7 +18,7 @@ app.use(express.static(path.join(__dirname, 'public'), {
 
 // ===== Tunable game constants =====
 const WORLD_RADIUS = 2200;
-const TICK_RATE = 22; // 22 Hz — Render-free-tier friendly
+const TICK_RATE = 28; // 28 Hz — more snapshots = less interp gap on mobile
 const TICK_MS = 1000 / TICK_RATE;
 const TARGET_FOOD = 600;
 const MAX_FOOD = 1500;
@@ -533,10 +533,22 @@ setInterval(() => {
 
 // ===== Broadcast =====
 function snakePayload(s) {
-  const seg = new Array(s.segments.length * 2);
-  for (let i = 0; i < s.segments.length; i++) {
-    seg[i * 2] = Math.round(s.segments[i].x);
-    seg[i * 2 + 1] = Math.round(s.segments[i].y);
+  // Delta-encoded segments: [headX, headY, dx1, dy1, dx2, dy2, ...]
+  // Most deltas are small ints (segments are ~9 px apart) -> JSON ~50% smaller.
+  const segs = s.segments;
+  const len = segs.length;
+  const seg = new Array(len * 2);
+  let prevX = Math.round(segs[0].x);
+  let prevY = Math.round(segs[0].y);
+  seg[0] = prevX;
+  seg[1] = prevY;
+  for (let i = 1; i < len; i++) {
+    const x = Math.round(segs[i].x);
+    const y = Math.round(segs[i].y);
+    seg[i * 2] = x - prevX;
+    seg[i * 2 + 1] = y - prevY;
+    prevX = x;
+    prevY = y;
   }
   return {
     id: s.id,
